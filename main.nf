@@ -2,7 +2,8 @@
 
 nextflow.enable.dsl = 2
 
-include { snp; report_snp } from './workflows/wf-human-snp'
+include { snp as snp_clair3; report_snp } from './workflows/wf-human-snp'
+include { snp as snp_parabricks } from './workflows/wf-human-snp-parabricks'
 include { lookup_clair3_model } from './modules/local/wf-human-snp'
 
 include { bam as sv } from './workflows/wf-human-sv'
@@ -658,44 +659,65 @@ workflow {
             snp_bed = Channel.fromPath("${projectDir}/data/OPTIONAL_FILE", checkIfExists: true)
         }
 
-        if(params.clair3_model_path) {
-            log.warn "Overriding Clair3 model with ${params.clair3_model_path}."
-            clair3_model = Channel.fromPath(params.clair3_model_path, type: "dir", checkIfExists: true)
+        // Choose between Parabricks DeepVariant and Clair3
+        if (params.use_parabricks) {
+            log.info "Using Parabricks DeepVariant for variant calling"
+            clair3_model = Channel.empty()
+
+            clair_vcf = snp_parabricks(
+                pass_bam_channel,
+                snp_bed,
+                ref_channel,
+                clair3_model,
+                genome_build,
+                haplotagged_output_fmt,
+                run_haplotagging,
+                using_user_bed,
+                chromosome_codes
+            )
         }
         else {
-            // Add back basecaller models, if available.
-            // Combine each BAM channel with the appropriate basecaller file
-            // Fetch the unique basecaller models and, if these are more than the
-            // ones in the metadata, add them in there.
-            // We do it in the snv scope as it is the only workflow relying on the
-            // model, and given it has to wait for the readStats process, we try
-            // minimizing the waits
-            detect_basecall_model(pass_bam_channel, bam_basecallers)
-            basecaller_cfg = detect_basecall_model.out.basecaller_cfg
-            pass_bam_channel = detect_basecall_model.out.bam_channel
+            log.info "Using Clair3 for variant calling"
 
-            // Get Clair3 model
-            clair3_model = lookup_clair3_model(
-                Channel.fromPath("${projectDir}/data/clair3_models.tsv", checkIfExists: true),
-                basecaller_cfg
-            )
-            | map {
-                log.info "Autoselected Clair3 model: ${it[0]}" // use model name for log message
-                it[1] // then just return the path to match the interface above
+            if(params.clair3_model_path) {
+                log.warn "Overriding Clair3 model with ${params.clair3_model_path}."
+                clair3_model = Channel.fromPath(params.clair3_model_path, type: "dir", checkIfExists: true)
             }
-        }
+            else {
+                // Add back basecaller models, if available.
+                // Combine each BAM channel with the appropriate basecaller file
+                // Fetch the unique basecaller models and, if these are more than the
+                // ones in the metadata, add them in there.
+                // We do it in the snv scope as it is the only workflow relying on the
+                // model, and given it has to wait for the readStats process, we try
+                // minimizing the waits
+                detect_basecall_model(pass_bam_channel, bam_basecallers)
+                basecaller_cfg = detect_basecall_model.out.basecaller_cfg
+                pass_bam_channel = detect_basecall_model.out.bam_channel
 
-        clair_vcf = snp(
-            pass_bam_channel,
-            snp_bed,
-            ref_channel,
-            clair3_model,
-            genome_build,
-            haplotagged_output_fmt,
-            run_haplotagging,
-            using_user_bed,
-            chromosome_codes
-        )
+                // Get Clair3 model
+                clair3_model = lookup_clair3_model(
+                    Channel.fromPath("${projectDir}/data/clair3_models.tsv", checkIfExists: true),
+                    basecaller_cfg
+                )
+                | map {
+                    log.info "Autoselected Clair3 model: ${it[0]}" // use model name for log message
+                    it[1] // then just return the path to match the interface above
+                }
+            }
+
+            clair_vcf = snp_clair3(
+                pass_bam_channel,
+                snp_bed,
+                ref_channel,
+                clair3_model,
+                genome_build,
+                haplotagged_output_fmt,
+                run_haplotagging,
+                using_user_bed,
+                chromosome_codes
+            )
+        }
     }
     
     // wf-human-sv
